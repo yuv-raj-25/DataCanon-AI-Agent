@@ -1,17 +1,36 @@
-import { db } from '@/db/db';
-import { openai } from '@ai-sdk/openai';
-import { streamText, UIMessage, convertToModelMessages, tool, stepCountIs } from 'ai';
-import z from 'zod';
+import { db } from "@/db/db";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import {
+  streamText,
+  UIMessage,
+  convertToModelMessages,
+  tool,
+  stepCountIs,
+} from "ai";
+import z from "zod";
 
 // Allow streaming responses up to 30 seconds
 export const maxDuration = 30;
 
 export async function POST(req: Request) {
-    const { messages }: { messages: UIMessage[] } = await req.json();
+  const { messages }: { messages: UIMessage[] } = await req.json();
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (!geminiKey) {
+    console.error("GEMINI_API_KEY is not configured.");
+    return new Response(
+      JSON.stringify({
+        error: "Server missing GEMINI_API_KEY environment variable.",
+      }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }
 
-    const SYSTEM_PROMPT = `You are an expert SQL assistant that helps users to query their database using natural language.
+  const SYSTEM_PROMPT = `You are an expert SQL assistant that helps users to query their database using natural language.
 
-    ${new Date().toLocaleString('sv-SE')}
+    ${new Date().toLocaleString("sv-SE")}
     You have access to following tools:
     1. db tool - call this tool to query the database.
     2. schema tool - call this tool to get the database schema which will help you to write sql query.
@@ -24,17 +43,19 @@ Rules:
 
 Always respond in a helpful, conversational tone while being technically accurate.`;
 
-    const result = streamText({
-        model: openai('gpt-5-nano-2025-08-07'),
-        messages: convertToModelMessages(messages),
-        system: SYSTEM_PROMPT,
-        stopWhen: stepCountIs(5),
-        tools: {
-            schema: tool({
-                description: 'Call this tool to get database schema information.',
-                inputSchema: z.object({}),
-                execute: async () => {
-                    return `CREATE TABLE products (
+  const google = createGoogleGenerativeAI({ apiKey: geminiKey });
+  const result = streamText({
+    model: google("gemini-2.5-pro"),
+    messages: convertToModelMessages(messages),
+    system: SYSTEM_PROMPT,
+    stopWhen: stepCountIs(5),
+    tools: {
+      schema: tool({
+        description:
+          "Call this tool to get database schema information.",
+        inputSchema: z.object({}),
+        execute: async () => {
+          return `CREATE TABLE products (
 	id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	name text NOT NULL,
 	category text NOT NULL,
@@ -53,22 +74,22 @@ CREATE TABLE sales (
 	region text NOT NULL,
 	FOREIGN KEY (product_id) REFERENCES products(id) ON UPDATE no action ON DELETE no action
 )`;
-                },
-            }),
-            db: tool({
-                description: 'Call this tool to query a database.',
-                inputSchema: z.object({
-                    query: z.string().describe('The SQL query to be ran.'),
-                }),
-                execute: async ({ query }) => {
-                    console.log('Query', query);
-                    // Important: make sure you sanitize / validate (somehow) check the query
-                    // string search [delete, update] -> Guardrails
-                    return await db.run(query);
-                },
-            }),
         },
-    });
+      }),
+      db: tool({
+        description: "Call this tool to query a database.",
+        inputSchema: z.object({
+          query: z.string().describe("The SQL query to be ran."),
+        }),
+        execute: async ({ query }) => {
+          console.log("Query", query);
+          // Important: make sure you sanitize / validate (somehow) check the query
+          // string search [delete, update] -> Guardrails
+          return await db.run(query);
+        },
+      }),
+    },
+  });
 
-    return result.toUIMessageStreamResponse();
+  return result.toUIMessageStreamResponse();
 }
